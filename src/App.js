@@ -87,7 +87,7 @@ function App() {
           </div>
 
           <div className="info-card">
-            <h2>📍 Location</h2>
+            <h2>📍 Location Info</h2>
             <div className="location-display">
               <p>{location}</p>
             </div>
