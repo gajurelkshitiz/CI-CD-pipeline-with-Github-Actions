@@ -13,6 +13,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      - name: Setup deployment logging
+        run: |
+          echo "🚀 Starting deployment process..."
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Timestamp: $(date)"
+
       - name: Set up SSH key
         run: |
           mkdir -p ~/.ssh
@@ -23,6 +32,167 @@ jobs:
           echo "✅ Host and port are reachable."
           ssh-keyscan -p ${{ secrets.SSH_PORT }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Connect to remote server and run command
+      - name: Copy project files to remote server
         run: |
-          ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "echo '✅ Connected! Hostname: $(hostname)'"
+          echo "📁 Copying project files to remote server..."
+          # Create deployment directory if it doesn't exist
+          ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "mkdir -p ~/my-app-deployment"
+          
+          # Copy all files except .git, node_modules, and .github
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude '.github' \
+            --exclude '.env.local' \
+            -e "ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }}" \
+            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/my-app-deployment/
+          
+          echo "✅ Files copied successfully!"
+
+      - name: Install dependencies and setup on remote server
+        run: |
+          ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          set -e  # Exit on any error
+          
+          echo "🔧 Setting up deployment..."
+          cd ~/my-app-deployment
+          
+          # Log system info for debugging
+          echo "📊 System Information:"
+          echo "Hostname: $(hostname)"
+          echo "Current user: $(whoami)"
+          echo "Current directory: $(pwd)"
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "PM2 version: $(pm2 --version)"
+          
+          # Install project dependencies
+          echo "📦 Installing project dependencies..."
+          npm install --production=false
+          echo "✅ Dependencies installed successfully!"
+          
+          # Build the project
+          echo "🏗️ Building the project..."
+          npm run build
+          echo "✅ Project built successfully!"
+          
+          EOF
+
+      - name: Deploy with PM2
+        run: |
+          ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          set -e  # Exit on any error
+          
+          echo "🚀 Deploying with PM2..."
+          cd ~/my-app-deployment
+          
+          # Create PM2 ecosystem file for better process management
+          cat > ecosystem.config.js << 'ECOSYSTEM_EOF'
+          module.exports = {
+            apps: [{
+              name: 'my-react-app',
+              script: 'npx',
+              args: 'serve -s build -l 8001',
+              cwd: '/home/$USER/my-app-deployment',
+              instances: 1,
+              autorestart: true,
+              watch: false,
+              max_memory_restart: '1G',
+              env: {
+                NODE_ENV: 'production',
+                PORT: 8001
+              },
+              error_file: './logs/err.log',
+              out_file: './logs/out.log',
+              log_file: './logs/combined.log',
+              time: true
+            }]
+          };
+          ECOSYSTEM_EOF
+          
+          # Create logs directory
+          mkdir -p logs
+          
+          # Stop existing PM2 process if running
+          echo "🛑 Stopping existing PM2 processes..."
+          pm2 stop my-react-app 2>/dev/null || echo "No existing process to stop"
+          pm2 delete my-react-app 2>/dev/null || echo "No existing process to delete"
+          
+          # Start the application with PM2
+          echo "🎯 Starting application with PM2..."
+          pm2 start ecosystem.config.js
+          
+          # Save PM2 configuration
+          pm2 save
+          
+          # Setup PM2 startup script
+          sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u $USER --hp /home/$USER
+          
+          # Display PM2 status
+          echo "📋 PM2 Process Status:"
+          pm2 status
+          pm2 logs my-react-app --lines 10
+          
+          echo "✅ Deployment completed successfully!"
+          echo "🌐 Application should be running on port 8001"
+          echo "📝 Logs location: ~/my-app-deployment/logs/"
+          
+          EOF
+
+      - name: Verify deployment
+        run: |
+          ssh -i ~/.ssh/github-actions -p ${{ secrets.SSH_PORT }} ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          
+          echo "🔍 Verifying deployment..."
+          
+          # Check if the process is running
+          if pm2 list | grep -q "my-react-app.*online"; then
+            echo "✅ PM2 process is running"
+          else
+            echo "❌ PM2 process is not running"
+            echo "📋 PM2 Status:"
+            pm2 status
+            echo "📝 Recent logs:"
+            pm2 logs my-react-app --lines 20
+            exit 1
+          fi
+          
+          # Test if the application responds
+          echo "🌐 Testing application response..."
+          sleep 5  # Wait for app to fully start
+          
+          if curl -f -s http://localhost:8001 > /dev/null; then
+            echo "✅ Application is responding on port 8001"
+          else
+            echo "❌ Application is not responding on port 8001"
+            echo "📝 Recent logs:"
+            pm2 logs my-react-app --lines 20
+            echo "🔍 Checking port usage:"
+            sudo netstat -tlnp | grep :8001 || echo "Port 8001 not in use"
+            exit 1
+          fi
+          
+          echo "🎉 Deployment verification completed successfully!"
+          
+          EOF
+
+      - name: Post-deployment summary
+        run: |
+          echo "🎊 Deployment Summary"
+          echo "=================="
+          echo "✅ Repository: ${{ github.repository }}"
+          echo "✅ Branch: ${{ github.ref_name }}"
+          echo "✅ Commit: ${{ github.sha }}"
+          echo "✅ Deployed by: ${{ github.actor }}"
+          echo "✅ Deployment time: $(date)"
+          echo ""
+          echo "🌐 Application Details:"
+          echo "   - URL: http://your-server-ip:8001"
+          echo "   - PM2 Process: my-react-app"
+          echo "   - Logs: ~/my-app-deployment/logs/"
+          echo ""
+          echo "🔧 Management Commands (run on server):"
+          echo "   - Check status: pm2 status"
+          echo "   - View logs: pm2 logs my-react-app"
+          echo "   - Restart: pm2 restart my-react-app"
+          echo "   - Stop: pm2 stop my-react-app"
