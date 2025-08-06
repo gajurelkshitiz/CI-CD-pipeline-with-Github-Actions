@@ -78,7 +78,7 @@ jobs:
           
           # Start the application with PM2
           echo "🎯 Starting application with PM2..."
-          pm2 start --name app-demo
+          pm2 start npm --name app-demo -- start
           
           # Display PM2 status
           echo "📋 PM2 Process Status:"
