@@ -18,6 +18,9 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/github-actions
           chmod 600 ~/.ssh/github-actions
+          echo "Testing if host is reachable..."
+          nc -zv ${{ secrets.SSH_HOST }} ${{ secrets.SSH_PORT }} || (echo "❌ Port not open or server unreachable" && exit 1)
+          echo "✅ Host and port are reachable."
           ssh-keyscan -p ${{ secrets.SSH_PORT }} -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
       - name: Connect to remote server and run command
