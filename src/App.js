@@ -15,6 +15,7 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  
   // Get user location
   useEffect(() => {
     if (navigator.geolocation) {
