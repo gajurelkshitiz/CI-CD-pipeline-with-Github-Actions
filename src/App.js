@@ -31,7 +31,7 @@ function App() {
         }
       );
     } else {
-      setLocation('Geolocation not supported');
+      setLocation('Geolocation not supported currently.');
       setWeather('Weather unavailable');
     }
   }, []);
